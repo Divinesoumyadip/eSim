@@ -47,20 +47,31 @@ class SpiceNetlist:
         self.title = ""
         self.subcircuits = []
         self.top_instances = []
+        self.internal_subckt_names = set()
         self._parse()
 
     def _parse(self):
         with open(self.path, "r", errors="replace") as f:
             lines = f.readlines()
         joined = self._join_continuations(lines)
+        # First pass: collect all internal subcircuit names
+        for line in joined:
+            stripped = line.strip()
+            if stripped.lower().startswith(".subckt"):
+                parts = stripped.split()
+                if len(parts) > 1:
+                    self.internal_subckt_names.add(parts[1].lower())
+        # Second pass: parse instances
         current_subckt = None
+        title_set = False
         for line in joined:
             stripped = line.strip()
             if not stripped or stripped.startswith("*"):
                 continue
             lower = stripped.lower()
-            if not self.title and not lower.startswith("."):
+            if not title_set and not lower.startswith("."):
                 self.title = stripped
+                title_set = True
                 continue
             if lower.startswith(".subckt"):
                 parts = stripped.split()
@@ -107,7 +118,7 @@ class PDKValidator:
         self.known_cells = PDK_CELL_LIBS[pdk]
 
     def validate(self, netlist):
-        valid_cells, unmappable, analog_found = [], [], []
+        valid_cells, unmappable, analog_found, internal_calls = [], [], [], []
         all_instances = list(netlist.top_instances)
         for subckt in netlist.subcircuits:
             all_instances.extend(subckt["instances"])
@@ -117,6 +128,8 @@ class PDKValidator:
             if ctype == "x":
                 if cell in self.known_cells:
                     valid_cells.append({"name": inst["name"], "cell": cell})
+                elif cell.lower() in netlist.internal_subckt_names:
+                    internal_calls.append({"name": inst["name"], "cell": cell})
                 else:
                     unmappable.append({"name": inst["name"], "cell": cell, "reason": f"Not found in {self.pdk} standard cell library"})
             elif ctype in ANALOG_PRIMITIVES:
@@ -126,7 +139,7 @@ class PDKValidator:
         return {
             "netlist": str(netlist.path), "pdk": self.pdk,
             "valid_cells": valid_cells, "unmappable": unmappable,
-            "analog_primitives": analog_found,
+            "analog_primitives": analog_found, "internal_calls": internal_calls,
             "summary": "PASS" if len(unmappable) == 0 else "FAIL",
         }
 
@@ -139,6 +152,10 @@ class PDKValidator:
             print(f"\n[OK] Mapped cells ({len(report['valid_cells'])}):")
             for c in report["valid_cells"]:
                 print(f"   {c['name']:30s} -> {c['cell']}")
+        if report.get("internal_calls"):
+            print(f"\n[HIER] Internal subcircuit calls ({len(report['internal_calls'])}):")
+            for c in report["internal_calls"]:
+                print(f"   {c['name']:30s} -> {c['cell']} (user-defined)")
         if report["analog_primitives"]:
             print(f"\n[SKIP] Analog primitives ({len(report['analog_primitives'])}):")
             for a in report["analog_primitives"]:
