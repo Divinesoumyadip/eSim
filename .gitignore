@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+mapping.json
+*.v
+config.mk
+oss-cad-suite/
